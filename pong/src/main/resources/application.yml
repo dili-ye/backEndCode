@@ -1,0 +1,11 @@
+server:
+  port: 8081
+spring:
+  application:
+    name: pong
+logging:
+  level:
+    root: info
+  file:
+    path: logs/${spring.application.name}-${server.port}
+  config: classpath:log4j2-spring.xml

@@ -1,0 +1,22 @@
+server:
+  port: 8091
+spring:
+  application:
+    name: ping
+  r2dbc:
+    password: test
+    username: postgres
+    url: r2dbc:postgresql://localhost:5432/postgres
+rocketmq:
+  name-server: 127.0.0.1:9876
+  consumer:
+    group: consumer
+  producer:
+    group: producer
+logging:
+  level:
+    root: info
+  file:
+    path: logs/${spring.application.name}-${server.port}
+  config: classpath:log4j2-spring.xml
+
