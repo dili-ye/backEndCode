@@ -5,6 +5,8 @@ import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest
 import org.springframework.test.web.reactive.server.WebTestClient
 import spock.lang.Specification
 
+import java.util.concurrent.atomic.AtomicInteger
+
 @WebFluxTest
 class PongSpec extends Specification{
 
@@ -13,54 +15,63 @@ class PongSpec extends Specification{
 
     def "test normal"() {
         expect:
+        sleep(1000)
         request().expectStatus().isOk()
                 .expectBody(String.class).isEqualTo("World")
     }
 
     def "test 429"() {
         sleep(1000)
-        println("sleep 1000ms ,time: ${System.currentTimeMillis()}")
         def firstResponse = request()
         when:
             firstResponse.expectStatus().isOk()
-            println("first request is ok ,time: ${System.currentTimeMillis()}")
         then:
             def secondResponse = request()
             when:
                 secondResponse.expectStatus().isEqualTo(429)
-                println("second request is 429 ,time: ${System.currentTimeMillis()}")
             then:
                 sleep(500)
                 def thirdResponse = request()
                 when:
                     thirdResponse.expectStatus().isEqualTo(429)
-                    println("third request is 429 ,time: ${System.currentTimeMillis()}")
                 then:
                     sleep(500)
                     request().expectStatus().isOk()
-                    println("last request is ok ,time: ${System.currentTimeMillis()}")
 
 
     }
 
     def "test thread cycle"() {
-        expect:
+
+        sleep(1000)
+        AtomicInteger okCount = new AtomicInteger(0)
+        when:
         Thread.start {
             for (i in 1..11) {
                 sleep(100)
-                def responseStatus1 = request().expectBody().returnResult().status
-                println("${Thread.currentThread().name} ,第 ${i} times request status ${responseStatus1} ,time: ${System.currentTimeMillis()}")
+                def responseStatus1 = request().returnResult(Void.class).status
+                println("${Thread.currentThread().name} ,第 ${i} times request ,status ${responseStatus1} ,time: ${System.currentTimeMillis()}")
+                if(responseStatus1.value()==200){
+                    okCount.incrementAndGet()
+                }
             }
         }
         Thread.start {
             for (i in 1..11) {
                 sleep(100)
-                def responseStatus2 = request().expectBody().returnResult().getStatus()
-                println("${Thread.currentThread().name} ,第 ${i} times request status ${responseStatus2} ,time: ${System.currentTimeMillis()}")
+                def responseStatus2 = request().returnResult(Void.class).status
+                println("${Thread.currentThread().name} ,第 ${i} times request ,status ${responseStatus2} ,time: ${System.currentTimeMillis()}")
+                if( responseStatus2.value()==200){
+                    okCount.incrementAndGet()
+                }
             }
         }
 
         sleep(3000)
+
+        then:
+        okCount.get()==2
+
     }
 
     private WebTestClient.ResponseSpec request() {

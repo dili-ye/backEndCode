@@ -3,20 +3,16 @@ package com.example.ping.service;
 import com.example.ping.entity.PingPong;
 import io.netty.util.internal.StringUtil;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.io.*;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
-import java.time.LocalDateTime;
+import java.nio.channels.OverlappingFileLockException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 
 import static com.example.ping.constant.RequestTypeEnum.*;
 
@@ -27,8 +23,6 @@ public class PingScheduler {
 
     private final PingService pingService;
 
-    private final RocketMQTemplate rocketMQTemplate;
-
     private static final int RATE_LIMIT = 2;
     private static final long RATE_MS = 1000L;
     public static final String LOCK_FILE_PATH ="ping-service.lock";
@@ -36,92 +30,55 @@ public class PingScheduler {
     @Value("${server.port}")
     private Integer port;
 
-    public PingScheduler(PingService pingService, RocketMQTemplate rocketMQTemplate) {
+    public PingScheduler(PingService pingService) {
         this.pingService = pingService;
-        this.rocketMQTemplate = rocketMQTemplate;
     }
 
     @Scheduled(fixedRate = 300)
     public void schedulePing() throws IOException {
-        long currentTime = System.currentTimeMillis();
-        File file = new File(LOCK_FILE_PATH);
-        if(!file.exists()){
-            file.createNewFile();
-        }
-        PingPong pingPong = new PingPong();
-        pingPong.setServiceCode("ping_"+port);
-        pingPong.setUuid(UUID.randomUUID().toString());
-        pingPong.setRequestTime(LocalDateTime.now());
+        File file = initFile();
+        processFileLock(file);
+    }
+
+    private void processFileLock(File file) {
+        PingPong pingPong = new PingPong("ping_"+port);
         RandomAccessFile raf = null;
         FileLock lock = null ;
         FileChannel channel = null;
+
         try {
             raf = new RandomAccessFile(file, "rw");
             channel = raf.getChannel();
             lock = channel.tryLock();
-            if(lock != null){
-                List<Long> timestamps = new ArrayList<>();
-                String line ;
-                while (!StringUtil.isNullOrEmpty(line = raf.readLine())) {
-                    long timestamp = Long.parseLong(line.trim());
-                    timestamps.add(timestamp);
-                }
-                boolean sendFlag = true;
-                if(timestamps.size()>=RATE_LIMIT){
-                    Long rateTime = timestamps.get(timestamps.size() - RATE_LIMIT);
-                    if(currentTime - rateTime < RATE_MS){
-                        sendFlag = false;
-                    }
-                }
-                if(sendFlag){
-                    pingService.pingPong()
-                            .subscribe(response -> {
-                                pingPong.setResponseTime(LocalDateTime.now());
-                                if (response.getStatusCode().is2xxSuccessful()) {
-                                    pingPong.setRequestType(OK.getCode());
-                                    pingPong.setDescription(OK.getDesc()+response.getBody());
-                                } else if (response.getStatusCode().value() == 429) {
-                                    pingPong.setRequestType(TOO_MANY_REQUEST.getCode());
-                                    pingPong.setDescription(TOO_MANY_REQUEST.getDesc());
-                                } else {
-                                    pingPong.setRequestType(UNKNOWN_ERROR.getCode());
-                                    pingPong.setDescription(UNKNOWN_ERROR.getDesc()+ response.getBody());
-                                }
-                                rocketMQTemplate.convertAndSend("ping_pong",pingPong);
-                            }, error -> {
-                                handleError(error,pingPong);
-                                rocketMQTemplate.convertAndSend("ping_pong",pingPong);
-                            });
-                    timestamps.add(currentTime);
-                    raf.setLength(0);
-                    for (int i = 0;i< timestamps.size();i++) {
-                        Long timestamp = timestamps.get(i);
-                        if (currentTime - timestamp < RATE_MS) {
-                            raf.writeBytes(timestamp + System.lineSeparator());
-                        }
-                    }
-                }else {
-                    pingPong.setRequestType(REQUEST_LIMIT.getCode());
-                    pingPong.setDescription(REQUEST_LIMIT.getDesc());
-                    rocketMQTemplate.convertAndSend("ping_pong",pingPong);
-                }
-            }else {
-                pingPong.setRequestType(REQUEST_LIMIT.getCode());
-                pingPong.setDescription(REQUEST_LIMIT.getDesc());
-                rocketMQTemplate.convertAndSend("ping_pong",pingPong);
+            if(lock == null){
+                pingService.processPingPongAndMQSend(pingPong,FILE_LOCK_ERROR,null);
+                return;
             }
-        }catch (Exception e) {
+
+            long currentTime = System.currentTimeMillis();
+            FileLockResult result = getFileLockResult(raf, currentTime);
+
+            if(result.sendFlag){
+                pingService.requestProcess(pingPong);
+                updateLockTime(result, currentTime, raf);
+            }else {
+                pingService.processPingPongAndMQSend(pingPong,REQUEST_LIMIT,null);
+            }
+        }catch (OverlappingFileLockException e) {
+            //同JVM内不同线程获取会报错
+            pingService.processPingPongAndMQSend(pingPong,FILE_LOCK_ERROR,null);
+        }catch (Exception e){
             e.printStackTrace();
-        }finally {
+        } finally {
             try {
                 if (lock != null && lock.isValid()) {
-                    lock.release(); // 释放锁
+                    lock.release();
                 }
                 if (channel != null) {
-                    channel.close(); // 关闭通道
+                    channel.close();
                 }
                 if (raf != null) {
-                    raf.close(); // 关闭 RandomAccessFile
+                    raf.close();
                 }
             } catch (IOException e) {
                 e.printStackTrace();
@@ -129,16 +86,57 @@ public class PingScheduler {
         }
     }
 
-    private static void handleError(Throwable error,PingPong pingPong) {
-        pingPong.setResponseTime(LocalDateTime.now());
-        pingPong.setRequestType(UNKNOWN_ERROR.getCode());
-        pingPong.setDescription(UNKNOWN_ERROR.getDesc()+ error.getMessage());
-        if (error instanceof WebClientResponseException) {
-            WebClientResponseException webClientResponseException = (WebClientResponseException) error;
-            if (webClientResponseException.getStatusCode() == HttpStatus.TOO_MANY_REQUESTS) {
-                pingPong.setRequestType(TOO_MANY_REQUEST.getCode());
-                pingPong.setDescription(TOO_MANY_REQUEST.getDesc());
+    private static void updateLockTime(FileLockResult result, long currentTime, RandomAccessFile raf) throws IOException {
+        result.timestamps.add(currentTime);
+        raf.setLength(0);
+        for (int i = 0; i< result.timestamps.size(); i++) {
+            Long timestamp = result.timestamps.get(i);
+            if (currentTime - timestamp < RATE_MS) {
+                raf.writeBytes(timestamp + System.lineSeparator());
             }
         }
     }
+
+    private FileLockResult getFileLockResult(RandomAccessFile raf, long currentTime) throws IOException {
+        List<Long> timestamps = new ArrayList<>();
+        String line ;
+        while (!StringUtil.isNullOrEmpty(line = raf.readLine())) {
+            long timestamp = Long.parseLong(line.trim());
+            timestamps.add(timestamp);
+        }
+        boolean sendFlag = true;
+        if(timestamps.size()>=RATE_LIMIT){
+            Long rateTime = timestamps.get(timestamps.size() - RATE_LIMIT);
+            if(currentTime - rateTime < RATE_MS){
+                sendFlag = false;
+            }
+        }
+        FileLockResult result = new FileLockResult(timestamps, sendFlag);
+        return result;
+    }
+
+    static class FileLockResult {
+        /**
+         * 滑动时间窗口毫秒值
+         */
+        public List<Long> timestamps;
+        /**
+         * 是否发送
+         */
+        public boolean sendFlag;
+
+        public FileLockResult(List<Long> timestamps, boolean sendFlag) {
+            this.timestamps = timestamps;
+            this.sendFlag = sendFlag;
+        }
+    }
+
+    private File initFile() throws IOException {
+        File file = new File(LOCK_FILE_PATH);
+        if(!file.exists()){
+            file.createNewFile();
+        }
+        return file;
+    }
+
 }

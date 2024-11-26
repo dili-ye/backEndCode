@@ -31,7 +31,7 @@ public class PongController {
                     }) == currentTime;
 
                     if (flag) {
-                        log.info("receive message,address:{}, key :{} , value:World",exchange.getRequest().getURI().getHost()+":"+exchange.getRequest().getURI().getPort(),hello);
+                        log.info("receive a message , address:{}, key :{} , value:World",exchange.getRequest().getURI().getHost()+":"+exchange.getRequest().getURI().getPort(),hello);
                         sink.next("World");
                     } else {
                         log.error("receive a message , but to many request,address:{} ,key :{}",exchange.getRequest().getURI().getHost()+":"+exchange.getRequest().getURI().getPort(),hello);

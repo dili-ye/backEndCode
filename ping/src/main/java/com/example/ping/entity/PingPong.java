@@ -8,6 +8,7 @@ import org.springframework.data.annotation.Id;
 import org.springframework.data.relational.core.mapping.Table;
 
 import java.time.LocalDateTime;
+import java.util.UUID;
 
 @Data
 @AllArgsConstructor
@@ -32,4 +33,10 @@ public class PingPong {
 
     private String description;
 
+    public PingPong(String serviceCode){
+        PingPong pingPong = new PingPong();
+        pingPong.setServiceCode(serviceCode);
+        pingPong.setUuid(UUID.randomUUID().toString());
+        pingPong.setRequestTime(LocalDateTime.now());
+    }
 }

@@ -125,6 +125,7 @@
                     <includes>
                         <include>**/controller/**</include>
                         <include>**/service/**</include>
+                        <include>**/dao/**</include>
                     </includes>
                 </configuration>
                 <executions>
