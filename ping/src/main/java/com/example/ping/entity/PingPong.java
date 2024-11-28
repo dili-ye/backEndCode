@@ -34,9 +34,8 @@ public class PingPong {
     private String description;
 
     public PingPong(String serviceCode){
-        PingPong pingPong = new PingPong();
-        pingPong.setServiceCode(serviceCode);
-        pingPong.setUuid(UUID.randomUUID().toString());
-        pingPong.setRequestTime(LocalDateTime.now());
+        this.serviceCode = serviceCode;
+        this.uuid = UUID.randomUUID().toString();
+        this.requestTime = LocalDateTime.now();
     }
 }
